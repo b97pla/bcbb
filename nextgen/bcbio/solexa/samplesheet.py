@@ -14,7 +14,9 @@ import operator
 
 import yaml
 
+from configparser import ConfigParser
 from bcbio.solexa.flowcell import (get_flowcell_info)
+from bcbio.pipeline.run_info import _unique_flowcell_info
 from bcbio import utils
 
 
@@ -78,21 +80,84 @@ def _read_input_csv(in_file):
 
     try:
         with open(in_file, "rU") as in_handle:
-            dialect = csv.Sniffer().sniff(in_handle.read(1024))
+            
+            # Peek at the data and attempt to separate MiSeq/HiSeq samplesheets
+            first_line = ""
+            while len(first_line) == 0:
+                first_line = in_handle.readline()
+            # Reset the file handle
             in_handle.seek(0)
-
-            reader = csv.DictReader(in_handle, dialect=dialect)
-            #reader.next()  # No need to skip header with csv.sniffer
-            for line in reader:
-                if line:  # skip empty lines
-                    yield line['FCID'], line['Lane'], line['SampleID'], \
-                          line['SampleRef'], line['Index'], line['Description'], \
-                          line.get('Recipe', None), line.get('Operator', None), \
-                          line.get('SampleProject', None)
+            
+            # MiSeq samplesheets have an ini-type syntax
+            if first_line.startswith("[Header],"):
+                # Make up a unique flowcell id for the MiSeq runs
+                fcid,_ = _unique_flowcell_info()
+                data = _read_miseq_ini_input_handle(in_handle)
+                for row in _read_headed_csv_input_handle(in_handle,
+                                                         ['Sample_ID','Sample_Name',
+                                                          'Index','Sample_Project'],
+                                                         ['Description']):
+                    yield[fcid,data['Lane'],row[0],row[1],row[2],row[4] or data['Description'],data['Chemistry'],data['Investigator Name'],row[3]]
+                
+            else:
+                for row in _read_headed_csv_input_handle(in_handle,
+                                                         ['FCID', 'Lane',
+                                                          'SampleID', 'SampleRef', 
+                                                          'Index', 'Description'],
+                                                         ['Recipe', 'Operator', 
+                                                          'SampleProject']):
+                    yield row
     except ValueError:
         print "Corrupt samplesheet %s, please fix it" % in_file
         pass
 
+def _read_miseq_ini_input_handle(in_handle):
+    
+    data = {}
+    try:
+        parser = ConfigParser(delimeters=(","))
+        parser.read_file(in_handle)
+        
+        data = parser.items('Settings')
+        for key, val in parser.items('Header'):
+            data[key] = val
+        data['Read lengths'] = ",".join(parser.options('Reads'))
+        data['Lane'] = 1
+        
+        # Finally, position the file pointer at the start of the [Data] section
+        in_handle.seek(0)
+        line = ""
+        while not line.startswith("[Data]"):
+            line = in_handle.readline()
+        
+    except Exception as e:
+        raise e
+    
+    return data
+        
+
+def _read_headed_csv_input_handle(in_handle, required_fields=[], optional_fields=[]):
+    try:
+        start = in_handle.tell()
+        print in_handle.read(1024)
+        in_handle.seek(start)
+        dialect = csv.Sniffer().sniff(in_handle.read(1024))
+        in_handle.seek(start)
+    
+        reader = csv.DictReader(in_handle, dialect=dialect)
+        #reader.next()  # No need to skip header with csv.sniffer
+        for line in reader:
+            if line:  # skip empty lines
+                data = []
+                data.extend([line[field] for field in required_fields])
+                data.extend([line.get(field,None) for field in optional_fields])
+                yield data
+                #yield line['FCID'], line['Lane'], line['SampleID'], \
+                #      line['SampleRef'], line['Index'], line['Description'], \
+                #      line.get('Recipe', None), line.get('Operator', None), \
+                #      line.get('SampleProject', None)
+    except ValueError as e:
+        raise e
 
 def _get_flowcell_id(in_file, require_single=True):
     """Retrieve the unique flowcell id represented in the SampleSheet.
