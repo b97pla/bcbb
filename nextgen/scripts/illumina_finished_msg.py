@@ -196,11 +196,14 @@ def _is_finished_dumping(directory):
     run_info = os.path.join(directory, "RunInfo.xml")
     hi_seq_checkpoint = "Basecalling_Netcopy_complete_Read%s.txt" % \
                         _expected_reads(run_info)
+    # include a check to wait for any ongoing MiSeq analysis
+    miseq_analysis_checkpoint = (not os.path.exists(os.path.join(directory, "QueuedForAnalysis.txt")) or os.path.exists(os.path.join(directory, "CompletedJobInfo.xml")))
+    
     to_check = ["Basecalling_Netcopy_complete_SINGLEREAD.txt",
                 "Basecalling_Netcopy_complete_READ2.txt",
                 hi_seq_checkpoint]
-    return reduce(operator.or_,
-            [os.path.exists(os.path.join(directory, f)) for f in to_check])
+    return (reduce(operator.or_,
+            [os.path.exists(os.path.join(directory, f)) for f in to_check]) and miseq_analysis_checkpoint)
 
 def _expected_reads(run_info_file):
     """Parse the number of expected reads from the RunInfo.xml file.
@@ -255,13 +258,15 @@ def _files_to_copy(directory):
         run_info = reduce(operator.add,
                         [glob.glob("run_info.yaml"),
                          glob.glob("*.csv"),
+                         glob.glob("*.txt")
                         ])
         logs = reduce(operator.add, [["Logs", "Recipe", "Diag", "Data/RTALogs", "Data/Log.txt"]])
         fastq = reduce(operator.add, 
                        [glob.glob("Data/Intensities/BaseCalls/*fastq.gz"),
                         ["Data/Intensities/BaseCalls/fastq"]])
+        analysis = reduce(operator.add, [glob.glob("Data/Intensities/BaseCalls/Alignment")])
     return (sorted(image_redo_files + logs + reports + run_info + qseqs),
-            sorted(reports + fastq + run_info))
+            sorted(reports + fastq + run_info + analysis))
 
 
 def _read_reported(msg_db):
@@ -323,8 +328,18 @@ if __name__ == "__main__":
             action="store_false", default=True)
     parser.add_option("-q", "--noqseq", dest="qseq",
             action="store_false", default=True)
+    parser.add_option("-m", "--miseq", dest="miseq",
+            action="store_true", default=False)
 
     (options, args) = parser.parse_args()
+    
+    # Option --miseq implies --noprocess, --nostore, --nofastq, --noqseq
+    if options.miseq:
+        options.process_msg = False
+        options.store_msg = False
+        options.fastq = False
+        options.qseq = False
+    
     kwargs = dict(fetch_msg=options.fetch_msg, process_msg=options.process_msg, store_msg=options.store_msg,
                   fastq=options.fastq, qseq=options.qseq)
     main(*args, **kwargs)
