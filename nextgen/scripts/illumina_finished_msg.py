@@ -46,17 +46,17 @@ log = logbook.Logger(LOG_NAME)
 
 
 def main(local_config, post_config_file=None,
-         fetch_msg=True, process_msg=True, store_msg=True, qseq=True, fastq=True):
+         fetch_msg=True, process_msg=True, store_msg=True, backup_msg=False, qseq=True, fastq=True):
     config = load_config(local_config)
     log_handler = create_log_handler(config,True)
 
     with log_handler.applicationbound():
         search_for_new(config, local_config, post_config_file,
-                       fetch_msg, process_msg, store_msg, qseq, fastq)
+                       fetch_msg, process_msg, store_msg, backup_msg, qseq, fastq)
 
 
 def search_for_new(config, config_file, post_config_file,
-                   fetch_msg, process_msg, store_msg, qseq, fastq):
+                   fetch_msg, process_msg, store_msg, backup_msg, qseq, fastq):
     """Search for any new unreported directories.
     """
     reported = _read_reported(config["msg_db"])
@@ -78,20 +78,20 @@ def search_for_new(config, config_file, post_config_file,
                         fastq_dir = _generate_fastq(dname, config)
                     _post_process_run(dname, config, config_file,
                                       fastq_dir, post_config_file,
-                                      fetch_msg, process_msg, store_msg)
+                                      fetch_msg, process_msg, store_msg, backup_msg)
                     # Update the reported database after successful processing
                     _update_reported(config["msg_db"], dname)
                 # Re-read the reported database to make sure it hasn't changed while processing
                 reported = _read_reported(config["msg_db"])
 
 def _post_process_run(dname, config, config_file, fastq_dir, post_config_file,
-                      fetch_msg, process_msg, store_msg):
+                      fetch_msg, process_msg, store_msg, backup_msg):
     """With a finished directory, send out message or process directly.
     """
     run_module = "bcbio.distributed.tasks"
     # without a configuration file, send out message for processing
     if post_config_file is None:
-        store_files, process_files = _files_to_copy(dname)
+        store_files, process_files, backup_files = _files_to_copy(dname)
         if process_msg:
             finished_message("analyze_and_upload", run_module, dname,
                              process_files, config, config_file)
@@ -99,11 +99,12 @@ def _post_process_run(dname, config, config_file, fastq_dir, post_config_file,
             finished_message("fetch_data", run_module, dname,
                              process_files, config, config_file)
         if store_msg:
-            #raise NotImplementedError("Storage server needs update.")
-            # Upload the entire flowcell
-            store_files = ["*"]
+            raise NotImplementedError("Storage server needs update.")
             finished_message("long_term_storage", run_module, dname,
                              store_files, config, config_file)
+        if backup_msg:
+            finished_message("backup", run_module, dname,
+                             backup_files, config, config_file)
     # otherwise process locally
     else:
         analyze_locally(dname, post_config_file, fastq_dir)
@@ -271,7 +272,8 @@ def _files_to_copy(directory):
                         ["Data/Intensities/BaseCalls/fastq"]])
         analysis = reduce(operator.add, [glob.glob("Data/Intensities/BaseCalls/Alignment")])
     return (sorted(image_redo_files + logs + reports + run_info + qseqs),
-            sorted(reports + fastq + run_info + analysis))
+            sorted(reports + fastq + run_info + analysis),
+            ["*"])
 
 
 def _read_reported(msg_db):
@@ -330,6 +332,8 @@ def finished_message(fn_name, run_module, directory, files_to_copy,
 
 if __name__ == "__main__":
     parser = OptionParser()
+    parser.add_option("-b", "--backup", dest="backup_msg",
+            action="store_true", default=False)
     parser.add_option("-d", "--nofetch", dest="fetch_msg",
             action="store_false", default=True)
     parser.add_option("-p", "--noprocess", dest="process_msg",
@@ -349,10 +353,11 @@ if __name__ == "__main__":
     if options.miseq:
         options.fetch_msg = False
         options.process_msg = False
-        options.store_msg = True
+        options.store_msg = False
+        options.backup_msg = True
         options.fastq = False
         options.qseq = False
     
-    kwargs = dict(fetch_msg=options.fetch_msg, process_msg=options.process_msg, store_msg=options.store_msg,
+    kwargs = dict(fetch_msg=options.fetch_msg, process_msg=options.process_msg, store_msg=options.store_msg, backup_msg=options.backup_msg,
                   fastq=options.fastq, qseq=options.qseq)
     main(*args, **kwargs)
